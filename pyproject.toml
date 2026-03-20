@@ -1,0 +1,16 @@
+[project]
+name = "tmux-mcp"
+version = "0.1.0"
+description = "MCP server exposing tmux primitives for session, window, and pane management"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.0.0,<3.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+tmux-mcp = "tmux_mcp:run_server"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
