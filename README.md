@@ -4,7 +4,7 @@ MCP server that gives AI agents direct access to tmux.
 
 Born out of frustration with flashy IDE integrations that make you dizzy. This is the opposite — a terminal-first, anti-distraction workflow where the AI works alongside you in tmux panes instead of taking over your screen.
 
-Inspired by [ThePrimeagen's per-project `.tmux` files](https://frontendmasters.com/courses/dev-tools-v2/). Same idea, but as YAML layouts that an AI agent can execute in one shot.
+Inspired by [ThePrimeagen's per-project `.tmux` files](https://frontendmasters.com/courses/developer-productivity-v2/). Same idea, but as YAML layouts that an AI agent can execute in one shot.
 
 ## What it does
 
