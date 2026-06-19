@@ -8,11 +8,16 @@ Inspired by [ThePrimeagen's per-project `.tmux` files](https://frontendmasters.c
 
 ## What it does
 
-13 tools. ~250 lines of Python. That's the whole thing.
+19 tools. One file of Python. That's the whole thing.
 
 **Session/pane basics:** create sessions, split panes, send commands, read output.
 
 **Window management:** create, list, select, rename windows.
+
+**Drive another TUI (e.g. a worker Claude session in another pane):** clear a
+half-typed input line, send a (multi-line) message safely, detect whether the
+target is busy or idle, read just the new output, or do the whole round-trip in
+one call. See below.
 
 **Layout engine:** Define your project setup in a `.tmux-layout.yaml`, call `run_layout`, get your entire workspace in one shot:
 
@@ -33,6 +38,35 @@ focus: server
 
 One tool call. Four windows. Split panes. All running. Done.
 
+## Driving another Claude session from a Claude session
+
+A two-pane setup — an *operator* Claude on the left, a *worker* Claude on the
+right — needs reliable cross-pane messaging. A raw `send-keys` into a TUI is
+brittle: multi-token key strings get typed literally, new text concatenates onto
+whatever was half-typed, and you can only read the whole screen back. These tools
+fix that:
+
+| Tool | What it does |
+|------|--------------|
+| `send_keys` | Send named keys. `"C-a C-k"` sends Ctrl-A then Ctrl-K (each token is a separate tmux key), never the literal text. |
+| `send_text` | Type **literal** text via bracketed paste (multi-line safe — newlines don't submit early). |
+| `clear_input` | Empty a half-typed input line (`ctrl-c` clears the Claude prompt; `ctrl-u` / `kill-line` for shells). |
+| `send_message` | The safe way to message a worker TUI: clears existing input, pastes the (multi-line) text, presses Enter — all in **one** tmux call. |
+| `pane_status` | Is the target Claude pane `busy` (generating) or `idle` (ready)? |
+| `read_pane_delta` | Return only output **added since the last read** for that pane — not the whole screen. |
+| `send_and_await_reply` | The seamless round-trip: send a message, wait for the worker to go busy→idle, return just the reply. |
+
+**Built for speed.** A send is a single chained tmux invocation with no fixed
+sleeps (~8 ms of overhead), and `send_and_await_reply` detects completion by
+watching the pane rather than waiting out fixed grace windows — so a round-trip
+costs roughly *model generation time + a ~0.25 s settle*, nothing more.
+
+```
+operator> send_and_await_reply("dev:0.1", "Run the tests and report failures")
+worker    (goes busy… then idle)
+operator< "3 tests failed in test_auth.py: ..."   # just the new reply
+```
+
 ## Install
 
 ```bash
@@ -50,9 +84,17 @@ Add to your Claude Code MCP config or any MCP-compatible client:
 }
 ```
 
+## Tests
+
+```bash
+uv sync --extra dev
+uv run pytest        # unit tests + live tmux integration (skips if tmux absent)
+uv run ruff check src/ tests/
+```
+
 ## Intentionally scrappy
 
-This is a working tool, not a polished product. No tests, no CI, no docs site. It does what I need it to do.
+This is a working tool, not a polished product. It does what I need it to do.
 
 If you also think the right AI coding UI is a terminal with less noise — PRs welcome. Fork it, break it, make it yours.
 

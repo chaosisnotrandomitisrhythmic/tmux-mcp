@@ -27,6 +27,25 @@ Homepage = "https://github.com/chaosisnotrandomitisrhythmic/tmux-mcp"
 Repository = "https://github.com/chaosisnotrandomitisrhythmic/tmux-mcp"
 Issues = "https://github.com/chaosisnotrandomitisrhythmic/tmux-mcp/issues"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+# E501 (line length) is left to judgement; several pre-existing tool docstrings
+# run long and reflowing them is out of scope for behavioural changes.
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [project.scripts]
 tmux-mcp = "tmux_mcp:run_server"
 
