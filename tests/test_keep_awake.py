@@ -164,6 +164,73 @@ def test_disablesleep_value_absent(monkeypatch):
     assert server._disablesleep_value() is None
 
 
+# ── scoping: unrelated caffeinate must NOT count as keep-awake-on ───
+#
+# Regression for the broad-pgrep bug: detection keyed off bare `caffeinate`,
+# so the harness's unrelated `caffeinate -i -t 300` registered as keep-awake-on
+# (status misreported, and `on` refused to cold-start). Detection must scope to
+# the keepawake tmux session + our own `caffeinate -dimsu` command only.
+
+
+class _ScopedCmdRecorder(_CmdRecorder):
+    """pgrep is argv-aware: a bare `caffeinate` (e.g. the harness's `-i -t 300`)
+    is present, but our specific `caffeinate -dimsu` is NOT. Anything else uses
+    the scripted responses map."""
+
+    def __call__(self, *args, timeout=30):
+        self.calls.append(list(args))
+        if args[0] == "pgrep":
+            pattern = args[-1]
+            # Only an unrelated bare `caffeinate` is alive: our `caffeinate -dimsu`
+            # signature finds NO match; a bare-`caffeinate` probe would (the old bug).
+            return (1, "", "") if pattern == "caffeinate -dimsu" else (0, "", "")
+        return self.responses.get(args[0], (0, "", ""))
+
+
+def test_status_ignores_unrelated_caffeinate(monkeypatch):
+    # No keepawake session, only an unrelated bare caffeinate is alive.
+    tmux = _TmuxRecorder(has_keepawake=False)
+    cmd = _ScopedCmdRecorder({"pmset": (0, " SleepDisabled\t\t0", "")})
+    _patch(monkeypatch, tmux, cmd)
+
+    out = server._keep_awake("status")
+
+    assert "running: no" in out  # the unrelated caffeinate must NOT count
+    assert "SleepDisabled: 0" in out
+    # And we must have probed with the scoped command, never bare `-x caffeinate`.
+    pgreps = [c for c in cmd.calls if c[0] == "pgrep"]
+    assert pgreps and all("-f" in c and "caffeinate -dimsu" in c for c in pgreps)
+    assert not any("-x" in c and "caffeinate" in c for c in pgreps)
+
+
+def test_on_cold_starts_despite_unrelated_caffeinate(monkeypatch):
+    # The cold-start path the harness's caffeinate used to block.
+    tmux = _TmuxRecorder(has_keepawake=False)
+    cmd = _ScopedCmdRecorder()
+    _patch(monkeypatch, tmux, cmd)
+
+    out = server._keep_awake("on")
+
+    new_sess = [c for c in tmux.calls if c[:1] == ["new-session"]]
+    assert new_sess and new_sess[0] == [
+        "new-session", "-d", "-s", "keepawake", "caffeinate -dimsu",
+    ]
+    assert "Started caffeinate" in out
+
+
+def test_off_only_kills_own_caffeinate(monkeypatch):
+    # off must pkill ONLY `caffeinate -dimsu`, never bare caffeinate.
+    tmux = _TmuxRecorder(has_keepawake=True)
+    cmd = _CmdRecorder()
+    _patch(monkeypatch, tmux, cmd)
+
+    server._keep_awake("off")
+
+    pkills = [c for c in cmd.calls if c[0] == "pkill"]
+    assert pkills and all("-f" in c and "caffeinate -dimsu" in c for c in pkills)
+    assert not any("-x" in c and "caffeinate" in c for c in pkills)
+
+
 # ── unknown action ─────────────────────────────────────────────────
 
 

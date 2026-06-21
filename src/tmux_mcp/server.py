@@ -599,13 +599,21 @@ _KEEPAWAKE_SESSION = "keepawake"
 
 
 def _keepawake_running() -> bool:
-    """True if the keepawake tmux session exists OR a caffeinate process is up."""
+    """True if the keepawake tmux session exists, or our own `caffeinate -dimsu`
+    process is up.
+
+    The dedicated tmux session is the canonical signal. We also match the
+    SPECIFIC `caffeinate -dimsu` command (our own signature) as a belt-and-suspenders
+    for a stray process whose session was killed out-of-band — but NEVER bare
+    `caffeinate`, so an unrelated caffeinate (e.g. the harness's `caffeinate -i -t 300`)
+    does not register as keep-awake-on.
+    """
     try:
         _run_tmux("has-session", "-t", _KEEPAWAKE_SESSION)
         return True
     except RuntimeError:
         pass
-    code, _, _ = _run_cmd("pgrep", "-x", "caffeinate")
+    code, _, _ = _run_cmd("pgrep", "-f", "caffeinate -dimsu")
     return code == 0
 
 
@@ -640,12 +648,14 @@ def _start_keepawake() -> bool:
 
 
 def _stop_keepawake() -> None:
-    """Kill the keepawake session and any stray caffeinate process."""
+    """Kill the keepawake session and any stray `caffeinate -dimsu` we started."""
     try:
         _run_tmux("kill-session", "-t", _KEEPAWAKE_SESSION)
     except RuntimeError:
         pass  # session may not exist — fine
-    _run_cmd("pkill", "-x", "caffeinate")  # catch caffeinate started outside the session
+    # Only our own `caffeinate -dimsu` — never bare `caffeinate`, so we don't kill
+    # unrelated caffeinate processes (e.g. the harness's `caffeinate -i -t 300`).
+    _run_cmd("pkill", "-f", "caffeinate -dimsu")
 
 
 def _keep_awake(action: str, lid_closed: bool = False) -> str:
