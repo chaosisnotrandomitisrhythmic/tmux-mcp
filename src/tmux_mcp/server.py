@@ -29,6 +29,22 @@ def _run_tmux(*args: str, timeout: int = 10, input_data: Optional[str] = None) -
     return result.stdout.strip()
 
 
+def _run_cmd(*args: str, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a non-tmux command, returning (returncode, stdout, stderr).
+
+    Unlike _run_tmux this does NOT raise on a non-zero exit — the power-management
+    helpers need to inspect the code (e.g. pgrep returns 1 when there is no match,
+    which is a normal "not running" answer, not an error).
+    """
+    result = subprocess.run(
+        list(args),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
 def _resolve_dir(directory: Optional[str], root: Optional[str] = None) -> Optional[str]:
     """Expand ~ and resolve relative paths against root."""
     if not directory:
@@ -567,6 +583,127 @@ def kill_session(name: str) -> str:
     """Kill a tmux session by name."""
     _run_tmux("kill-session", "-t", name)
     return f"Session '{name}' killed."
+
+
+# ── macOS keep-awake (power management) ────────────────────────────
+#
+# Two awake levels:
+#   (a) caffeinate -dimsu  — lid OPEN, no admin. Run in a dedicated, visible,
+#       survivable tmux session so it's easy to find and kill (vs a bare
+#       subprocess that gets orphaned and stuck — which is how we ended up
+#       no-sleep for days). Detected by tmux session / pgrep, nothing fragile.
+#   (b) pmset disablesleep 1 — lid CLOSED, needs admin (osascript GUI auth so it
+#       works without a tty). Drains battery; opt-in only via lid_closed=True.
+
+_KEEPAWAKE_SESSION = "keepawake"
+
+
+def _keepawake_running() -> bool:
+    """True if the keepawake tmux session exists OR a caffeinate process is up."""
+    try:
+        _run_tmux("has-session", "-t", _KEEPAWAKE_SESSION)
+        return True
+    except RuntimeError:
+        pass
+    code, _, _ = _run_cmd("pgrep", "-x", "caffeinate")
+    return code == 0
+
+
+def _disablesleep_value() -> Optional[str]:
+    """Return the SleepDisabled value from `pmset -g` ('0'/'1'), or None if absent."""
+    code, out, _ = _run_cmd("pmset", "-g")
+    if code != 0:
+        return None
+    for line in out.splitlines():
+        if "sleepdisabled" in line.lower():
+            return line.split()[-1]
+    return None
+
+
+def _set_disablesleep(value: int) -> None:
+    """Set pmset disablesleep via an osascript admin prompt (GUI auth, no tty needed)."""
+    script = (
+        f'do shell script "/usr/bin/pmset -a disablesleep {value}" '
+        "with administrator privileges"
+    )
+    code, _, err = _run_cmd("osascript", "-e", script)
+    if code != 0:
+        raise RuntimeError(f"pmset disablesleep {value} failed: {err}")
+
+
+def _start_keepawake() -> bool:
+    """Start caffeinate in the keepawake tmux session. True if newly started, False if already up."""
+    if _keepawake_running():
+        return False
+    _run_tmux("new-session", "-d", "-s", _KEEPAWAKE_SESSION, "caffeinate -dimsu")
+    return True
+
+
+def _stop_keepawake() -> None:
+    """Kill the keepawake session and any stray caffeinate process."""
+    try:
+        _run_tmux("kill-session", "-t", _KEEPAWAKE_SESSION)
+    except RuntimeError:
+        pass  # session may not exist — fine
+    _run_cmd("pkill", "-x", "caffeinate")  # catch caffeinate started outside the session
+
+
+def _keep_awake(action: str, lid_closed: bool = False) -> str:
+    action = action.lower().strip()
+    if action == "on":
+        started = _start_keepawake()
+        lines = [
+            "Started caffeinate in tmux session 'keepawake'."
+            if started
+            else "caffeinate already running (keepawake) — left as is."
+        ]
+        if lid_closed:
+            _set_disablesleep(1)
+            lines.append(
+                "Lid-closed mode ON: pmset disablesleep 1 "
+                "(⚠️ drains battery on AC/battery — run keep_awake('off') to revert)."
+            )
+        else:
+            lines.append(
+                "Caffeinate-only (lid must stay OPEN). Pass lid_closed=True to allow the lid closed."
+            )
+        return "\n".join(lines)
+    if action == "off":
+        _stop_keepawake()
+        _set_disablesleep(0)
+        return "Stopped keepawake/caffeinate and reset pmset disablesleep 0 (sleep restored)."
+    if action == "status":
+        running = _keepawake_running()
+        sleepdisabled = _disablesleep_value()
+        sd = sleepdisabled if sleepdisabled is not None else "unknown"
+        return (
+            f"caffeinate/keepawake running: {'yes' if running else 'no'}\n"
+            f"pmset SleepDisabled: {sd}"
+        )
+    return f"Unknown action '{action}'. Use one of: on, off, status."
+
+
+@mcp.tool()
+def keep_awake(action: str, lid_closed: bool = False) -> str:
+    """Toggle macOS keep-awake for lid-closed remote tmux management.
+
+    action="on": start `caffeinate -dimsu` in a dedicated tmux session named
+    'keepawake' (idempotent — won't double-start). Lid must stay OPEN; no admin
+    needed. Pass lid_closed=True to ALSO run `pmset disablesleep 1` (via an
+    osascript admin prompt) so the Mac stays awake with the lid CLOSED.
+
+    action="off": kill the keepawake session/caffeinate AND always reset
+    `pmset disablesleep 0` (safety net — reverts lid-closed mode even if it was
+    enabled out-of-band, so the Mac can never get stuck in no-sleep).
+
+    action="status": report whether caffeinate/keepawake is running and the
+    current pmset SleepDisabled value.
+
+    ⚠️ SAFETY: lid_closed / disablesleep keeps the Mac awake on BATTERY too and
+    will drain it. The default (caffeinate-only) is the safe option — use
+    lid_closed only when plugged in, and run keep_awake('off') to revert.
+    """
+    return _keep_awake(action, lid_closed)
 
 
 # ── Window management ──────────────────────────────────────────────
